@@ -37,6 +37,8 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-inline-pi-agent
 | `models` | 空 | 两套目录命名不一致时的 DSH 路由 → pi 路由映射。 |
 | `catalog` | `true` | 是否把 pi 的模型目录注册进 DSH（选择器据此显示）。 |
 | `requestHeader` | `true` | 每步记录 `request/header` 与 `request/context`；token 计量与会话交还依赖它。 |
+| `streamFlushMs` | `20` | 流式增量的合并窗口（5–200ms）。pi 每个 token 一个 delta，合并后浏览器才有可渲染的帧率。 |
+| `streamFlushChars` | `1024` | 缓冲超过该字符数立即 flush，限制单条大小。 |
 | `piSessionDir` | `~/.dsh/pi-sessions` | 重建的 pi 会话快照目录。 |
 | `debug` | `false` | 协议与生命周期日志。 |
 

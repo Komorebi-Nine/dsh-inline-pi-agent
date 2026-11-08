@@ -78,8 +78,14 @@ function textOf(message) {
     .join('\n')
 }
 
+/** Whether two queued deltas belong to the same coalesced run. */
+function sameRun(first, next) {
+  if (next.kind !== first.kind || next.contentIndex !== first.contentIndex) return false
+  return first.kind !== 'tool-call' || (next.id === first.id && next.name === first.name)
+}
+
 export class PiAgent {
-  constructor({ ctx, session, agentOptions, rpc, cwd, logger, modelMap, modelInfo, startSource, requestHeader, toolSchemas }) {
+  constructor({ ctx, session, agentOptions, rpc, cwd, logger, modelMap, modelInfo, startSource, requestHeader, toolSchemas, streamFlushMs, streamFlushChars }) {
     this.id = session.id
     this.session = session
     this.options = agentOptions ?? {}
@@ -108,6 +114,11 @@ export class PiAgent {
     this.cancelCause = { kind: 'user' }
     this.attempt = null
     this.attemptSeq = 0
+    this.pendingDeltas = []
+    this.pendingChars = 0
+    this.pendingTimer = null
+    this.flushMs = streamFlushMs ?? 20
+    this.flushChars = streamFlushChars ?? 1024
     this.frameRevision = 0
     this.toolCallSeqs = new Map()
     this.settleWaiters = []
@@ -160,6 +171,7 @@ export class PiAgent {
   }
 
   cancel(cause, options) {
+    this.#flushDeltas()
     this.cancelCause = cause
     if (options?.keepInbox !== true) this.inbox.clear()
     // A cancellation with no active work is a no-op: it must not arm later work.
@@ -312,6 +324,7 @@ export class PiAgent {
         this.#recordRequest()
         return
       case 'turn_end':
+        this.#flushDeltas()
         this.#closeStep()
         return
       case 'message_start':
@@ -363,40 +376,116 @@ export class PiAgent {
     const attempt = this.attempt
     const update = event.assistantMessageEvent
     if (attempt === null || update === undefined) return
-    const index = update.contentIndex ?? 0
+    const contentIndex = update.contentIndex ?? 0
 
     if (update.type === 'toolcall_start') {
-      attempt.toolCalls.set(index, { id: String(update.id ?? ''), name: update.toolName })
+      attempt.toolCalls.set(contentIndex, { id: String(update.id ?? ''), name: update.toolName })
       return
     }
 
-    let chunk
+    let delta
     if (update.type === 'text_delta') {
-      chunk = { type: 'text-delta', index, text: update.delta ?? '' }
+      delta = { kind: 'text', contentIndex, text: update.delta ?? '' }
     } else if (update.type === 'thinking_delta') {
-      chunk = { type: 'reasoning-delta', index, text: update.delta ?? '' }
+      delta = { kind: 'reasoning', contentIndex, text: update.delta ?? '' }
     } else if (update.type === 'toolcall_delta') {
-      const tool = attempt.toolCalls.get(index)
-      chunk = {
-        type: 'tool-call-delta',
-        index,
-        id: ToolCallId(tool?.id ?? ''),
-        ...(tool?.name === undefined ? {} : { name: tool.name }),
-        argumentsDelta: update.delta ?? '',
-      }
+      const tool = attempt.toolCalls.get(contentIndex)
+      if (tool === undefined || tool.id === '') return
+      delta = { kind: 'tool-call', contentIndex, text: update.delta ?? '', id: tool.id, name: tool.name }
     } else {
       return
     }
+    if (delta.text === '') return
+    delta.time = Date.now()
+    this.#queueDelta(delta)
+  }
 
-    const time = Date.now()
-    attempt.records.push({ type: 'chunk', time, chunk })
+  /**
+   * pi streams one delta per token, which is far more frames than a browser
+   * needs. Batch them into short windows: the client still receives dense
+   * frames, and the durable stream packs each window into one record.
+   */
+  #queueDelta(delta) {
+    this.pendingDeltas.push(delta)
+    this.pendingChars += delta.text.length
+    // Bound memory and chunk size: a burst flushes immediately.
+    if (this.pendingChars >= this.flushChars) {
+      this.#flushDeltas()
+      return
+    }
+    if (this.pendingTimer !== null) return
+    this.pendingTimer = setTimeout(() => {
+      this.pendingTimer = null
+      this.#flushDeltas()
+    }, this.flushMs)
+    this.pendingTimer.unref?.()
+  }
+
+  #flushDeltas() {
+    if (this.pendingTimer !== null) {
+      clearTimeout(this.pendingTimer)
+      this.pendingTimer = null
+    }
+    const attempt = this.attempt
+    const pending = this.pendingDeltas.splice(0, this.pendingDeltas.length)
+    this.pendingChars = 0
+    if (attempt === null || pending.length === 0) return
+    let cursor = 0
+    while (cursor < pending.length) {
+      const first = pending[cursor]
+      let end = cursor + 1
+      while (end < pending.length && sameRun(first, pending[end])) end += 1
+      this.#emitRun(attempt, pending.slice(cursor, end))
+      cursor = end
+    }
+  }
+
+  /** Emit one coalesced chunk frame plus its packed durable record. */
+  #emitRun(attempt, members) {
+    const first = members[0]
+    const texts = members.map((member) => member.text)
+    const times = members.map((member) => member.time)
+    const dt = []
+    for (let index = 1; index < times.length; index += 1) dt.push(Math.max(0, times[index] - times[index - 1]))
+    const time0 = times[0]
+    const lastTime = times[times.length - 1]
+
+    if (first.kind === 'text') {
+      attempt.records.push({ type: 'text-chunks', time0, index: first.contentIndex, dt, texts })
+    } else if (first.kind === 'reasoning') {
+      attempt.records.push({ type: 'reasoning-chunks', time0, index: first.contentIndex, dt, texts })
+    } else {
+      attempt.records.push({
+        type: 'tool-call-chunks',
+        time0,
+        index: first.contentIndex,
+        dt,
+        id: first.id,
+        ...(first.name === undefined ? {} : { name: first.name }),
+        args: texts,
+      })
+    }
+
+    const text = texts.join('')
+    const chunk = first.kind === 'text'
+      ? { type: 'text-delta', index: first.contentIndex, text }
+      : first.kind === 'reasoning'
+        ? { type: 'reasoning-delta', index: first.contentIndex, text }
+        : {
+            type: 'tool-call-delta',
+            index: first.contentIndex,
+            id: ToolCallId(first.id),
+            ...(first.name === undefined ? {} : { name: first.name }),
+            argumentsDelta: text,
+          }
+
     this.dispatch.emit('agent/assistant-stream', {
       frame: {
         type: 'chunk',
         attemptId: attempt.id,
         revision: ++this.frameRevision,
         index: attempt.index,
-        time,
+        time: lastTime,
         chunk,
       },
     })
@@ -404,6 +493,7 @@ export class PiAgent {
   }
 
   #finishAttempt(message) {
+    this.#flushDeltas()
     const attempt = this.attempt
     this.attempt = null
     const blocks = convertBlocks(message.content)
@@ -455,6 +545,7 @@ export class PiAgent {
   }
 
   #onToolStart(event) {
+    this.#flushDeltas()
     this.#openStep()
     const callId = ToolCallId(String(event.toolCallId ?? ''))
     const callEvent = this.session.append('tool/call', {
@@ -503,6 +594,7 @@ export class PiAgent {
     if (this.disposed) return
     this.disposed = true
     this.aborted = true
+    this.#flushDeltas()
     this.unwatch?.()
     this.unwatchExit?.()
     this.rpc.close()
@@ -533,3 +625,5 @@ class PiModel {
     this.onSelect?.(selection)
   }
 }
+
+

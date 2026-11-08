@@ -541,6 +541,27 @@ dsh plugin --profile web add link:C:/Users/k/Documents/DSH/dsh-pi-agent
 - 插件卸载时通过 `ctx.effect` 调 `factory.disposeAll()` 停掉所有存活 agent 及其 pi 子进程；
 - README/CONTRACT 明确：**停用/启用后必须重启 `dsh web`**，并给出默认模型悬空的修复片段。
 
+## 9.9 流式卡顿：增量合并（2026-11-08）
+
+现象：pi 每个 token 一个 `message_update`，原先一帧一 delta，长输出时帧数量级过大（实测 1728 个 delta/轮），浏览器侧渲染与传输都被拖慢。
+
+做法：
+
+- 按 `streamFlushMs`（默认 20ms）合并同一内容块上连续的同类型 delta，一次 flush 发**一个** `text-delta`/`reasoning-delta`/`tool-call-delta` 帧；
+- 缓冲超过 `streamFlushChars`（默认 1024 字符）立即 flush，避免单条过大；
+- 持久记录由"每 delta 一条 raw `chunk`"改为**打包记录**（`text-chunks` / `reasoning-chunks` / `tool-call-chunks`，`time0` + `dt[]` + `texts[]/args[]`），与 DSH 原生 loop 的紧凑格式一致；
+- 在 `message_end`、`turn_end`、工具事件、`cancel`、`dispose` 前强制 flush，保证中断路径不丢前缀。
+
+实测（同一提示，1..800 行数字）：
+
+| 指标 | 合并前 | 合并后 |
+|---|---|---|
+| 帧数 | 1728 | 169 |
+| 持久记录数 | 1728（raw chunk） | 169（打包 run） |
+| `expandAssistantStream` 还原 | 1728 chunk | 1693 chunk / 3091 字符 ✅ |
+
+`expandAssistantStream` 校验通过，说明打包记录对历史回放完全兼容。
+
 ## 10. 待验证（剩余）
 
 无阻塞项。可选后续：

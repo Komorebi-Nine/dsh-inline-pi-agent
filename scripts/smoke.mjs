@@ -129,6 +129,31 @@ const ask = async (agent, text) => {
   await agent.whenIdle()
 }
 
+if (mode === 'bench') {
+  const { expandAssistantStream } = await import('@deepseek-ai/dsh-llm')
+  const started = Date.now()
+  const handle = await createAgent({
+    sessionId: SessionId(`bench-${Date.now().toString(36)}`),
+    meta: { cwd: workdir },
+    agentOptions: { provider: 'deepseek', model: 'deepseek-flash' },
+  })
+  await ask(handle.agent, 'Count from 1 to 800, one number per line, no other text.')
+  const elapsed = Date.now() - started
+  const events = handle.agent.session.ownEvents()
+  const message = events.find((event) => event.type === 'assistant/message')
+  const records = message?.data.stream ?? []
+  const frameBytes = live.frames.reduce((total, frame) => total + JSON.stringify(frame).length, 0)
+  const chunkFrames = live.frames.filter((frame) => frame.type === 'chunk')
+  const expanded = expandAssistantStream(records)
+  const text = expanded.map((entry) => (entry.chunk.type === 'text-delta' ? entry.chunk.text : '')).join('')
+  console.log('elapsed ms:', elapsed)
+  console.log('chunk frames:', chunkFrames.length, '| frame bytes:', frameBytes)
+  console.log('durable records:', records.length, '| record types:', [...new Set(records.map((record) => record.type))].join(','))
+  console.log('expanded chunks:', expanded.length, '| text chars:', text.length, '| head:', JSON.stringify(text.slice(0, 24)))
+  await handle.dispose()
+  process.exit(0)
+}
+
 if (mode === 'reload') {
   // Simulate a live bundle toggle: unload the plugin fiber, then apply it again.
   const first = await createAgent({

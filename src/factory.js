@@ -101,6 +101,8 @@ export class PiAgentFactory {
       startSource: source,
       requestHeader: this.options.requestHeader !== false,
       toolSchemas: () => this.registryCtx.get('tools')?.schemas?.() ?? [],
+      ...(this.options.streamFlushMs === undefined ? {} : { streamFlushMs: this.options.streamFlushMs }),
+      ...(this.options.streamFlushChars === undefined ? {} : { streamFlushChars: this.options.streamFlushChars }),
       ...(this.options.models === undefined ? {} : { modelMap: this.options.models }),
       ...(this.options.modelInfo === undefined ? {} : { modelInfo: this.options.modelInfo }),
     })

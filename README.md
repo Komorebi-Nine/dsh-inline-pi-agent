@@ -37,6 +37,8 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-inline-pi-agent
 | `models` | empty | DSH route → pi route mapping, when the two catalogs use different names. |
 | `catalog` | `true` | Register pi's model catalog into DSH so the selector lists pi's models. |
 | `requestHeader` | `true` | Record `request/header` and `request/context` per step. Needed for token measurement and for handing a session back to the built-in loop. |
+| `streamFlushMs` | `20` | Coalescing window for streamed deltas (5–200 ms). pi emits one delta per token; batching keeps the browser at a renderable frame rate. |
+| `streamFlushChars` | `1024` | Flush immediately once this many characters are buffered, bounding chunk size. |
 | `piSessionDir` | `~/.dsh/pi-sessions` | Where rebuilt pi session snapshots are written. |
 | `debug` | `false` | Protocol and lifecycle diagnostics. |
 
