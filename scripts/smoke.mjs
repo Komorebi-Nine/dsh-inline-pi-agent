@@ -137,7 +137,7 @@ if (mode === 'bench') {
     meta: { cwd: workdir },
     agentOptions: { provider: 'deepseek', model: 'deepseek-flash' },
   })
-  await ask(handle.agent, 'Count from 1 to 800, one number per line, no other text.')
+  await ask(handle.agent, 'Write the numbers 1 to 800, one per line, and nothing else. Do not call any tool.')
   const elapsed = Date.now() - started
   const events = handle.agent.session.ownEvents()
   const message = events.find((event) => event.type === 'assistant/message')
@@ -146,8 +146,11 @@ if (mode === 'bench') {
   const chunkFrames = live.frames.filter((frame) => frame.type === 'chunk')
   const expanded = expandAssistantStream(records)
   const text = expanded.map((entry) => (entry.chunk.type === 'text-delta' ? entry.chunk.text : '')).join('')
-  console.log('elapsed ms:', elapsed)
-  console.log('chunk frames:', chunkFrames.length, '| frame bytes:', frameBytes)
+  const times = chunkFrames.map((frame) => frame.time)
+  const gaps = times.slice(1).map((time, index) => time - times[index])
+  const avgGap = gaps.length === 0 ? 0 : Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length)
+  console.log('elapsed ms:', elapsed, '| avg frame gap ms:', avgGap, '| min gap:', Math.min(...gaps), '| max gap:', Math.max(...gaps))
+  console.log('chunk frames:', chunkFrames.length)
   console.log('durable records:', records.length, '| record types:', [...new Set(records.map((record) => record.type))].join(','))
   console.log('expanded chunks:', expanded.length, '| text chars:', text.length, '| head:', JSON.stringify(text.slice(0, 24)))
   await handle.dispose()

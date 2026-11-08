@@ -541,26 +541,31 @@ dsh plugin --profile web add link:C:/Users/k/Documents/DSH/dsh-pi-agent
 - 插件卸载时通过 `ctx.effect` 调 `factory.disposeAll()` 停掉所有存活 agent 及其 pi 子进程；
 - README/CONTRACT 明确：**停用/启用后必须重启 `dsh web`**，并给出默认模型悬空的修复片段。
 
-## 9.9 流式卡顿：增量合并（2026-11-08）
+## 9.9 流式呈现：从"合并"到"匀速揭示"（2026-11-08）
 
-现象：pi 每个 token 一个 `message_update`，原先一帧一 delta，长输出时帧数量级过大（实测 1728 个 delta/轮），浏览器侧渲染与传输都被拖慢。
+现象演进：
 
-做法：
+1. 初版一 delta 一帧 → 长输出 1728 帧，浏览器卡顿。
+2. 改为 20ms 合并窗口 → 帧数降了，但文本变成"跳跃式"出现：一次刷新就吐出十几个 token。
+3. 根因不是渲染，而是**发送节奏**：pi 的 delta 突发到达（实测约 250 个/秒），任何"攒够就发"的策略都会成块。
 
-- 按 `streamFlushMs`（默认 20ms）合并同一内容块上连续的同类型 delta，一次 flush 发**一个** `text-delta`/`reasoning-delta`/`tool-call-delta` 帧；
-- 缓冲超过 `streamFlushChars`（默认 1024 字符）立即 flush，避免单条过大；
-- 持久记录由"每 delta 一条 raw `chunk`"改为**打包记录**（`text-chunks` / `reasoning-chunks` / `tool-call-chunks`，`time0` + `dt[]` + `texts[]/args[]`），与 DSH 原生 loop 的紧凑格式一致；
-- 在 `message_end`、`turn_end`、工具事件、`cancel`、`dispose` 前强制 flush，保证中断路径不丢前缀。
+最终做法（paced reveal）：
+
+- delta 进入队列，按 `streamPaceMs`（默认 16ms）一拍发**一帧**；
+- 每拍字符预算 = `ceil(积压 / streamCatchUpFrames)`，上限 `streamMaxCharsPerFrame`（默认 64），可跨多个 delta 取，且不跨内容块；
+- 因此显示速率自动跟随到达速率：稳态积压约 6 拍（≈96ms），既平滑又不会落后；
+- `message_end` / `turn_end` / 工具事件 / `cancel` / `dispose` 前用 `#drainNow()` 兜底排空；
+- 持久记录在 `#finishAttempt` 时把 timeline **压缩成打包 run**（每条消息通常 2–3 条记录）。
 
 实测（同一提示，1..800 行数字）：
 
-| 指标 | 合并前 | 合并后 |
-|---|---|---|
-| 帧数 | 1728 | 169 |
-| 持久记录数 | 1728（raw chunk） | 169（打包 run） |
-| `expandAssistantStream` 还原 | 1728 chunk | 1693 chunk / 3091 字符 ✅ |
-
-`expandAssistantStream` 校验通过，说明打包记录对历史回放完全兼容。
+| 指标 | 值 |
+|---|---|
+| 原始 delta | ~1700 |
+| 揭示帧 | 300（约 37 fps） |
+| 帧间隔 | 平均 19ms / 最大 32ms |
+| 持久记录 | 2 条打包 run |
+| 回放校验 | `expandAssistantStream` 通过，3091 字符完整 |
 
 ## 10. 待验证（剩余）
 

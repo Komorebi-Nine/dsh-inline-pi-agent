@@ -85,7 +85,7 @@ function sameRun(first, next) {
 }
 
 export class PiAgent {
-  constructor({ ctx, session, agentOptions, rpc, cwd, logger, modelMap, modelInfo, startSource, requestHeader, toolSchemas, streamFlushMs, streamFlushChars }) {
+  constructor({ ctx, session, agentOptions, rpc, cwd, logger, modelMap, modelInfo, startSource, requestHeader, toolSchemas, streamPaceMs, streamCatchUpFrames, streamMaxCharsPerFrame }) {
     this.id = session.id
     this.session = session
     this.options = agentOptions ?? {}
@@ -114,11 +114,11 @@ export class PiAgent {
     this.cancelCause = { kind: 'user' }
     this.attempt = null
     this.attemptSeq = 0
-    this.pendingDeltas = []
-    this.pendingChars = 0
-    this.pendingTimer = null
-    this.flushMs = streamFlushMs ?? 20
-    this.flushChars = streamFlushChars ?? 1024
+    this.revealQueue = []
+    this.revealTimer = null
+    this.revealMs = streamPaceMs ?? 16
+    this.revealCatchUp = streamCatchUpFrames ?? 6
+    this.revealMaxChars = streamMaxCharsPerFrame ?? 64
     this.frameRevision = 0
     this.toolCallSeqs = new Map()
     this.settleWaiters = []
@@ -171,7 +171,7 @@ export class PiAgent {
   }
 
   cancel(cause, options) {
-    this.#flushDeltas()
+    this.#drainNow()
     this.cancelCause = cause
     if (options?.keepInbox !== true) this.inbox.clear()
     // A cancellation with no active work is a no-op: it must not arm later work.
@@ -324,7 +324,7 @@ export class PiAgent {
         this.#recordRequest()
         return
       case 'turn_end':
-        this.#flushDeltas()
+        this.#drainNow()
         this.#closeStep()
         return
       case 'message_start':
@@ -360,7 +360,7 @@ export class PiAgent {
 
   #startAttempt() {
     this.attemptSeq += 1
-    this.attempt = { id: `pi-${String(this.attemptSeq)}`, index: 0, records: [], toolCalls: new Map() }
+    this.attempt = { id: `pi-${String(this.attemptSeq)}`, index: 0, timeline: [], toolCalls: new Map() }
     this.dispatch.emit('agent/assistant-stream', {
       frame: {
         type: 'start',
@@ -401,81 +401,92 @@ export class PiAgent {
   }
 
   /**
-   * pi streams one delta per token, which is far more frames than a browser
-   * needs. Batch them into short windows: the client still receives dense
-   * frames, and the durable stream packs each window into one record.
+   * pi delivers deltas in bursts — one per token, often several per stdout
+   * read — so forwarding each immediately makes text jump. Queue the character
+   * run and reveal it on a fixed cadence instead: one frame per tick, with a
+   * catch-up slice so the display never falls behind the provider.
    */
   #queueDelta(delta) {
-    this.pendingDeltas.push(delta)
-    this.pendingChars += delta.text.length
-    // Bound memory and chunk size: a burst flushes immediately.
-    if (this.pendingChars >= this.flushChars) {
-      this.#flushDeltas()
+    this.revealQueue.push(delta)
+    if (this.revealTimer !== null) return
+    this.revealTimer = setTimeout(() => {
+      this.revealTimer = null
+      this.#revealTick()
+    }, this.revealMs)
+    this.revealTimer.unref?.()
+  }
+
+  #revealTick() {
+    const attempt = this.attempt
+    if (attempt === null) {
+      this.revealQueue.length = 0
       return
     }
-    if (this.pendingTimer !== null) return
-    this.pendingTimer = setTimeout(() => {
-      this.pendingTimer = null
-      this.#flushDeltas()
-    }, this.flushMs)
-    this.pendingTimer.unref?.()
+    const head = this.revealQueue[0]
+    if (head === undefined) return
+
+    let queued = 0
+    for (const delta of this.revealQueue) queued += delta.text.length
+    // Reveal roughly one catch-up fraction of what is buffered, bounded by the
+    // per-frame cap so a big burst arrives as several frames instead of one.
+    let budget = Math.max(1, Math.min(this.revealMaxChars, Math.ceil(queued / this.revealCatchUp)))
+    const parts = []
+    while (budget > 0 && this.revealQueue.length > 0) {
+      const next = this.revealQueue[0]
+      // Never merge across content blocks: the client tracks one block per chunk.
+      if (next.kind !== head.kind || next.contentIndex !== head.contentIndex || next.id !== head.id) break
+      if (next.text.length <= budget) {
+        parts.push(next.text)
+        budget -= next.text.length
+        this.revealQueue.shift()
+      } else {
+        parts.push(next.text.slice(0, budget))
+        next.text = next.text.slice(budget)
+        budget = 0
+      }
+    }
+    this.#emitChunk(attempt, head, parts.join(''), Date.now())
+    if (this.revealQueue.length > 0) {
+      this.revealTimer = setTimeout(() => {
+        this.revealTimer = null
+        this.#revealTick()
+      }, this.revealMs)
+      this.revealTimer.unref?.()
+    }
   }
 
-  #flushDeltas() {
-    if (this.pendingTimer !== null) {
-      clearTimeout(this.pendingTimer)
-      this.pendingTimer = null
+  /** Reveal everything still queued right now (boundaries and teardown). */
+  #drainNow() {
+    if (this.revealTimer !== null) {
+      clearTimeout(this.revealTimer)
+      this.revealTimer = null
     }
     const attempt = this.attempt
-    const pending = this.pendingDeltas.splice(0, this.pendingDeltas.length)
-    this.pendingChars = 0
-    if (attempt === null || pending.length === 0) return
-    let cursor = 0
-    while (cursor < pending.length) {
-      const first = pending[cursor]
-      let end = cursor + 1
-      while (end < pending.length && sameRun(first, pending[end])) end += 1
-      this.#emitRun(attempt, pending.slice(cursor, end))
-      cursor = end
-    }
+    const queued = this.revealQueue.splice(0, this.revealQueue.length)
+    if (attempt === null) return
+    for (const delta of queued) this.#emitChunk(attempt, delta, delta.text, Date.now())
   }
 
-  /** Emit one coalesced chunk frame plus its packed durable record. */
-  #emitRun(attempt, members) {
-    const first = members[0]
-    const texts = members.map((member) => member.text)
-    const times = members.map((member) => member.time)
-    const dt = []
-    for (let index = 1; index < times.length; index += 1) dt.push(Math.max(0, times[index] - times[index - 1]))
-    const time0 = times[0]
-    const lastTime = times[times.length - 1]
-
-    if (first.kind === 'text') {
-      attempt.records.push({ type: 'text-chunks', time0, index: first.contentIndex, dt, texts })
-    } else if (first.kind === 'reasoning') {
-      attempt.records.push({ type: 'reasoning-chunks', time0, index: first.contentIndex, dt, texts })
-    } else {
-      attempt.records.push({
-        type: 'tool-call-chunks',
-        time0,
-        index: first.contentIndex,
-        dt,
-        id: first.id,
-        ...(first.name === undefined ? {} : { name: first.name }),
-        args: texts,
-      })
-    }
-
-    const text = texts.join('')
-    const chunk = first.kind === 'text'
-      ? { type: 'text-delta', index: first.contentIndex, text }
-      : first.kind === 'reasoning'
-        ? { type: 'reasoning-delta', index: first.contentIndex, text }
+  /** Publish one revealed slice: one live frame plus one timeline entry. */
+  #emitChunk(attempt, source, text, time) {
+    if (text === '') return
+    attempt.timeline.push({
+      kind: source.kind,
+      contentIndex: source.contentIndex,
+      id: source.id,
+      name: source.name,
+      text,
+      time,
+    })
+    const chunk = source.kind === 'text'
+      ? { type: 'text-delta', index: source.contentIndex, text }
+      : source.kind === 'reasoning'
+        ? { type: 'reasoning-delta', index: source.contentIndex, text }
         : {
             type: 'tool-call-delta',
-            index: first.contentIndex,
-            id: ToolCallId(first.id),
-            ...(first.name === undefined ? {} : { name: first.name }),
+            index: source.contentIndex,
+            id: ToolCallId(source.id),
+            ...(source.name === undefined ? {} : { name: source.name }),
             argumentsDelta: text,
           }
 
@@ -485,15 +496,48 @@ export class PiAgent {
         attemptId: attempt.id,
         revision: ++this.frameRevision,
         index: attempt.index,
-        time: lastTime,
+        time,
         chunk,
       },
     })
     attempt.index += 1
   }
 
+  /** Compress the revealed timeline into one packed record per contiguous run. */
+  #packStream(timeline) {
+    const records = []
+    let cursor = 0
+    while (cursor < timeline.length) {
+      const first = timeline[cursor]
+      let end = cursor + 1
+      while (end < timeline.length && sameRun(first, timeline[end])) end += 1
+      const members = timeline.slice(cursor, end)
+      const texts = members.map((member) => member.text)
+      const times = members.map((member) => member.time)
+      const dt = []
+      for (let index = 1; index < times.length; index += 1) dt.push(Math.max(0, times[index] - times[index - 1]))
+      if (first.kind === 'text') {
+        records.push({ type: 'text-chunks', time0: times[0], index: first.contentIndex, dt, texts })
+      } else if (first.kind === 'reasoning') {
+        records.push({ type: 'reasoning-chunks', time0: times[0], index: first.contentIndex, dt, texts })
+      } else {
+        records.push({
+          type: 'tool-call-chunks',
+          time0: times[0],
+          index: first.contentIndex,
+          dt,
+          id: first.id,
+          ...(first.name === undefined ? {} : { name: first.name }),
+          args: texts,
+        })
+      }
+      cursor = end
+    }
+    return records
+  }
+
   #finishAttempt(message) {
-    this.#flushDeltas()
+    this.#drainNow()
     const attempt = this.attempt
     this.attempt = null
     const blocks = convertBlocks(message.content)
@@ -524,7 +568,7 @@ export class PiAgent {
         turn: this.turn,
         step: this.step,
         message: createAssistantMessage({ content: blocks, source }),
-        stream: attempt?.records ?? [],
+        stream: attempt === null ? [] : this.#packStream(attempt.timeline),
         ...(usage === undefined ? {} : { usage }),
         ...(interrupted ? { interrupted: true } : {}),
       },
@@ -545,7 +589,7 @@ export class PiAgent {
   }
 
   #onToolStart(event) {
-    this.#flushDeltas()
+    this.#drainNow()
     this.#openStep()
     const callId = ToolCallId(String(event.toolCallId ?? ''))
     const callEvent = this.session.append('tool/call', {
@@ -594,7 +638,7 @@ export class PiAgent {
     if (this.disposed) return
     this.disposed = true
     this.aborted = true
-    this.#flushDeltas()
+    this.#drainNow()
     this.unwatch?.()
     this.unwatchExit?.()
     this.rpc.close()
@@ -625,5 +669,6 @@ class PiModel {
     this.onSelect?.(selection)
   }
 }
+
 
 

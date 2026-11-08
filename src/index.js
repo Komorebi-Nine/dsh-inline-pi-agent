@@ -18,6 +18,9 @@ export const name = 'pi-agent'
 
 export const inject = ['sessions', 'agents', 'sessionProjections', 'llm']
 
+/** Finite positive number check for numeric config options. */
+const positive = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0
+
 export async function apply(ctx, config = {}) {
   // `agent-loop` normally owns these units. During a live bundle toggle the two
   // owners can overlap; a duplicate registration must not fail this plugin (or
@@ -65,12 +68,9 @@ export async function apply(ctx, config = {}) {
     ...(config.piSessionDir === undefined ? {} : { piSessionDir: config.piSessionDir }),
     requestHeader: config.requestHeader !== false,
     ...(modelInfo === undefined ? {} : { modelInfo }),
-    ...(typeof config.streamFlushMs === 'number' && Number.isFinite(config.streamFlushMs) && config.streamFlushMs > 0
-      ? { streamFlushMs: Math.min(200, Math.max(5, config.streamFlushMs)) }
-      : {}),
-    ...(typeof config.streamFlushChars === 'number' && Number.isFinite(config.streamFlushChars) && config.streamFlushChars > 0
-      ? { streamFlushChars: config.streamFlushChars }
-      : {}),
+    ...(positive(config.streamPaceMs) ? { streamPaceMs: Math.min(200, Math.max(8, config.streamPaceMs)) } : {}),
+    ...(positive(config.streamCatchUpFrames) ? { streamCatchUpFrames: Math.max(1, Math.round(config.streamCatchUpFrames)) } : {}),
+    ...(positive(config.streamMaxCharsPerFrame) ? { streamMaxCharsPerFrame: Math.max(1, Math.round(config.streamMaxCharsPerFrame)) } : {}),
     logger,
   })
   ctx.agents.setFactory(factory)
