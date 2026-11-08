@@ -521,6 +521,26 @@ dsh plugin --profile web add link:C:/Users/k/Documents/DSH/dsh-pi-agent
 
 注意：对已安装过的包再次执行 `dsh plugin add` 只会 `Already up to date`，不会补登记 bundle（安装器只扫描新增依赖）；需要 `remove` 后重装，或用 bundle 开关。
 
+### 9.8 热切换 bundle 的实际风险（2026-11-08 现场复现）
+
+现场：启用后对话正常、会话可见；在设置里**停用**并刷新页面 → 会话列表全空；**完整重启 `dsh web` 后全部恢复**。
+
+核对结果：
+
+| 检查 | 结论 |
+|---|---|
+| 会话文件 | 39 个目录都在，最新会话 61 个事件（3 轮 + 工具 + header）完整 |
+| 服务端列表 | 直接调用 `sessionQuery.listSessions()` 返回 43 条，含该 pi 会话 |
+| 插件自身卸载/重载 | 冒烟 `reload` 模式通过：卸载 fiber → 重新 apply → 新一轮正常，无残留 |
+
+结论：数据与插件生命周期都正常，故障点在 **loader 热切换工厂与投影**这一层：停用 bundle 会同时恢复 `agent-loop`（它要注册唯一工厂和 `inbox`/`modelSelection` 投影）并卸载本插件，两个 owner 在重载窗口内重叠；`recompose` 对"新引入的失败条目"会抛错（`app-boot` L4617），留下半应用的树 —— 投影缺失后客户端无法渲染冷会话，表现为列表全空。
+
+已做的加固：
+
+- 投影注册改为"冲突即让位"（另一个 owner 提供同语义单元时不报错）；
+- 插件卸载时通过 `ctx.effect` 调 `factory.disposeAll()` 停掉所有存活 agent 及其 pi 子进程；
+- README/CONTRACT 明确：**停用/启用后必须重启 `dsh web`**，并给出默认模型悬空的修复片段。
+
 ## 10. 待验证（剩余）
 
 无阻塞项。可选后续：

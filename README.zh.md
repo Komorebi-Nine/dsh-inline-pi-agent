@@ -58,6 +58,15 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-inline-pi-agent
 
 在**设置 → 插件**里停用该 bundle，或移除包。bundle 层随之消失，`agent-loop` 恢复启用，已有会话可继续。
 
+**停用/启用后请重启 `dsh web`。** 切换会替换唯一的 agent 工厂与 loop 的会话投影，运行中的 loader 无法原子完成这次替换；半应用的重载会让会话列表显示为空（数据仍在磁盘上，重启即恢复）。切换本身不会改动任何会话数据。
+
+如果启用期间把部署默认模型改成了 pi 路由，停用前请改回内置路由——pi 的 provider 只在 bundle 加载期间存在：
+
+```yaml
+- id: agent-default-model
+  config: { provider: deepseek-official, model: deepseek-flash }
+```
+
 ## 开发
 
 `CONTRACT.md` 记录了插件所依赖的接口、事件与协议契约，以及对应的实测数据。`scripts/smoke.mjs` 是独立测试台（不需要 DSH 服务器），覆盖 text / tool / multi / abort / dispose / resume / steer / followup / token / catalog：

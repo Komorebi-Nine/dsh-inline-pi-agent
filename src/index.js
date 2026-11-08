@@ -19,8 +19,15 @@ export const name = 'pi-agent'
 export const inject = ['sessions', 'agents', 'sessionProjections', 'llm']
 
 export async function apply(ctx, config = {}) {
+  // `agent-loop` normally owns these units. During a live bundle toggle the two
+  // owners can overlap; a duplicate registration must not fail this plugin (or
+  // worse, fail the reloading tree) — the other owner provides the same fold.
   for (const definition of projectionDefinitions) {
-    await ctx.sessionProjections.register(definition)
+    try {
+      await ctx.sessionProjections.register(definition)
+    } catch (error) {
+      ctx.logger?.warn?.(`[pi-agent] projection "${String(definition.key)}" already owned: ${String(error)}`)
+    }
   }
 
   const debug = config.debug === true
@@ -61,4 +68,8 @@ export async function apply(ctx, config = {}) {
     logger,
   })
   ctx.agents.setFactory(factory)
+
+  // A live bundle toggle unloads this plugin while agents may still be running:
+  // tear them down (and close their pi children) instead of leaking them.
+  ctx.effect(() => () => factory.disposeAll())
 }

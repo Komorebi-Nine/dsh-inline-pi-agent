@@ -48,7 +48,7 @@ ctx.plugin(LlmRuntime)
 ctx.plugin(AgentRegistry)
 ctx.plugin(TokenMeter)
 ctx.plugin(SessionStats)
-ctx.plugin(piAgentPlugin, {
+const pluginFiber = ctx.plugin(piAgentPlugin, {
   piPath: process.env.PI_PATH ?? 'pi',
   cwd: workdir,
   debug: true,
@@ -127,6 +127,38 @@ const dump = (session) => {
 const ask = async (agent, text) => {
   agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
   await agent.whenIdle()
+}
+
+if (mode === 'reload') {
+  // Simulate a live bundle toggle: unload the plugin fiber, then apply it again.
+  const first = await createAgent({
+    sessionId: SessionId(`reload-a-${Date.now().toString(36)}`),
+    meta: { cwd: workdir },
+    agentOptions: { provider: 'deepseek', model: 'deepseek-flash' },
+  })
+  await ask(first.agent, 'Reply with exactly: RELOAD_A')
+  console.log('first turn ok')
+  await first.dispose()
+  await pluginFiber.dispose()
+  console.log('plugin unloaded')
+  const second = ctx.plugin(piAgentPlugin, {
+    piPath: process.env.PI_PATH ?? 'pi',
+    cwd: workdir,
+    debug: true,
+    models: { 'deepseek-official/deepseek-flash': 'deepseek/deepseek-flash' },
+  })
+  const handle = await createAgent({
+    sessionId: SessionId(`reload-b-${Date.now().toString(36)}`),
+    meta: { cwd: workdir },
+    agentOptions: { provider: 'deepseek', model: 'deepseek-flash' },
+  })
+  await ask(handle.agent, 'Reply with exactly: RELOAD_B')
+  console.log('second turn ok')
+  dump(handle.agent.session)
+  await handle.dispose()
+  await second.dispose()
+  console.log('reload cycle ok')
+  process.exit(0)
 }
 
 if (mode === 'checks') {

@@ -58,6 +58,15 @@ Override any of them in your profile patch:
 
 Disable the bundle under **Settings → Plugins**, or remove the package. The bundle layer disappears with it, so `agent-loop` is enabled again and existing sessions continue under the built-in loop.
 
+**Restart `dsh web` after toggling the bundle.** Switching it on or off replaces the single agent factory and the loop's session projections. A running loader cannot apply that swap atomically; a half-applied reload can show an empty session list even though every session is intact on disk. A restart always restores them. Session data is never touched by the toggle.
+
+If you also changed the deployment default model to a pi route while the bundle was active, set it back to a built-in route before disabling — pi providers only exist while the bundle is loaded:
+
+```yaml
+- id: agent-default-model
+  config: { provider: deepseek-official, model: deepseek-flash }
+```
+
 ## Development
 
 `CONTRACT.md` records the interface, event and protocol contracts the plugin is built against, together with the measurements behind them. `scripts/smoke.mjs` is a standalone harness (no DSH server) covering text, tool, multi-turn, abort, dispose, resume, steer, followup, token accounting and the model catalog:

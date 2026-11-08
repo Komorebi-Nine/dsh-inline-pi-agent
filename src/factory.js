@@ -35,6 +35,14 @@ export class PiAgentFactory {
   constructor(registryCtx, options) {
     this.registryCtx = registryCtx
     this.options = options
+    this.live = new Set()
+  }
+
+  /** Stop every agent this factory published (plugin unload). */
+  disposeAll() {
+    const disposers = [...this.live]
+    this.live.clear()
+    return Promise.allSettled(disposers.map((dispose) => dispose()))
   }
 
   #sessionFile(id) {
@@ -141,7 +149,15 @@ export class PiAgentFactory {
       detachAgent = this.registryCtx.agents.enter(agent, parentAgent)
       await this.registryCtx.agents.announce(agent, source, signal)
       emitAgentEvent(this.registryCtx, agent, 'agent/session-start', { source })
-      return { agent, dispose: () => dispose().then(() => undefined) }
+      const owned = () => dispose().then(() => undefined)
+      this.live.add(owned)
+      return {
+        agent,
+        dispose: () => {
+          this.live.delete(owned)
+          return owned()
+        },
+      }
     } catch (error) {
       unfollowOwner?.()
       await dispose()
