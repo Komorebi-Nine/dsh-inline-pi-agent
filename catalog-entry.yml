@@ -1,0 +1,11 @@
+# Catalog submission for awesome-dsh-plugin.
+#
+# The list is curated from data/plugins/<owner>__<repo>.yml in
+# https://github.com/awesome-dsh-plugin/awesome-dsh-plugin — open a PR there
+# adding this file (one entry per PR is the common case).
+url: https://github.com/Komorebi-Nine/dsh-inline-pi-agent
+name: Komorebi-Nine/dsh-inline-pi-agent
+category: dev
+description:
+  en: 'Replaces the DeepSeek Harness agent loop with the pi coding agent. One bundle install drives every session through a headless pi process; streaming, tool cards, stop and resume keep working, the model selector lists pi''s own models, and a session can be handed back to the built-in loop without losing history.'
+  zh: '用 bundle 一行安装把 DeepSeek Harness 的 agent loop 换成 pi coding agent。每个会话由无头 pi 进程驱动，流式输出、工具卡片、停止与 resume 照常工作，模型选择器直接显示 pi 自己的模型，会话也能无损交还给内置 loop。'

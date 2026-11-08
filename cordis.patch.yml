@@ -1,0 +1,23 @@
+# dsh-pi-agent bundle layer.
+#
+# Installing this package as a profile bundle applies every row below, so the
+# profile needs no hand-written patch. One row — `agent-loop` — is replaced
+# because the agent registry holds a single factory.
+- id: agent-loop
+  disabled: true
+
+# pi owns compaction; DSH-side compaction would call the catalog-only route.
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+# DSH-side pruning rewrites the log that resume replays into pi.
+- id: tool-result-pruner
+  disabled: true
+
+- insert:
+    - id: pi-agent
+      name: 'dsh-inline-pi-agent'
+      config:
+        piPath: 'pi'
+        debug: false

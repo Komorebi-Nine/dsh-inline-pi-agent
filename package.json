@@ -1,0 +1,49 @@
+{
+  "name": "dsh-inline-pi-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run the pi coding agent loop inside DeepSeek Harness as a profile bundle",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "pi",
+    "pi-coding-agent",
+    "agent-loop",
+    "cordis"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Komorebi-Nine/dsh-inline-pi-agent.git"
+  },
+  "homepage": "https://github.com/Komorebi-Nine/dsh-inline-pi-agent#readme",
+  "bugs": {
+    "url": "https://github.com/Komorebi-Nine/dsh-inline-pi-agent/issues"
+  },
+  "engines": {
+    "dsh": "^0.2.2-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.1.0",
+    "@deepseek-ai/dsh-agent": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-scope": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-session": "^0.2.2-rc.1"
+  }
+}
